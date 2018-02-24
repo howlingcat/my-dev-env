@@ -1,0 +1,9 @@
+let g:netrw_dirhistmax  =10
+let g:netrw_dirhist_cnt =7
+let g:netrw_dirhist_1='/home/dpdk/sources/silver-bullet/tb-main/6wind/ffu/patch/6WINDGate-3.35.0-SDS-XLP-RSYS-PP81-1.1-GA-UP2-BCM-SDK-2.2.4'
+let g:netrw_dirhist_2='/home/dpdk/sources/silver-bullet/tbos/slow_path/applications/DPE'
+let g:netrw_dirhist_3='/home/dpdk/sources/silver-bullet/tbos/slow_path/utilities/ActionsUtil'
+let g:netrw_dirhist_4='/home/dpdk/sources/silver-bullet/tbos/slow_path/SPDK/external'
+let g:netrw_dirhist_5='/home/dpdk/junk/customized-components'
+let g:netrw_dirhist_6='/home/dpdk/sandbox/libaddr2line-master/src'
+let g:netrw_dirhist_7='/home/dpdk/sources/dpdk/dpdk-16.07/lib/librte_eal'
