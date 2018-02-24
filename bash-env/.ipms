@@ -1,0 +1,177 @@
+export SOURCE_BASE=$HOME/sources
+export SILVER_BULLET_BASE=$SOURCE_BASE/silver-bullet
+
+#-------------------------------------------------------------
+# Name:         setcdbdir
+# Purpose:      Set the directory in which in IPMS database will
+#               be using. can be existing or new
+#        Will also change the confd command for DaemonTools
+# Parameter(s): 1. Mandatory. Full path to directory
+#-------------------------------------------------------------
+setcdbdir()
+{
+    if [ -z $1 ]; then
+        echo "Usage: setcdbdir <dir path>"
+        return 1
+    fi
+    
+    if [ ! -d $1 ]; then
+        mkdir -p $1
+    fi
+
+    export IPMS_CDB_DIR=$1
+    
+    if [ "$(ls -A $IPMS_CDB_DIR)" ]; then
+        sudo sh -c 'echo \#!/bin/bash > /service/confd/run'
+        sudo sh -c 'echo cd '$IPMS_CDB_DIR' >> /service/confd/run'
+        sudo sh -c 'echo /usr/confd/bin/confd --foreground --addloadpath '$IPMS_CDB_DIR'/schema -c '$IPMS_CDB_DIR'/confd.conf >> /service/confd/run'
+        echo changed CDB dir to $IPMS_CDB_DIR, do ipms_restart for these changes to take effect
+    else
+        echo "CDB dir is empty, run ipms_install"
+    fi
+}
+export -f setcdbdir
+
+#------------------------------------------------------------
+# Name:        ipms-workon
+# Purpose:      cd's to the specified sandbox and sets
+#               the appropriate environment variables.
+#               sandbox directory must exist. if no
+#        second argument is supplied, DB location
+#        will default to HOME/cdb/<Branch>
+# Parameter(s): 1. Mandatory. Name of sandbox directory
+#        2. Optional. Full path to desired IPMS
+#           database location
+#-------------------------------------------------------------
+ipms_workon()
+{
+    SILVER_BULLET_SANDBOX=""
+    SIXWIND_SANDBOX=""
+
+    if [ -z $1 ]; then
+        echo "Usage: ipms_workon <silver-bullet sandbox>"
+        return 1
+    fi
+    
+    if [ -z $2 ]; then
+        setcdbdir $HOME/cdb/$1
+    else
+        setcdbdir $2
+    fi
+
+    SILVER_BULLET_SANDBOX="$1"
+
+    if [ ! -d $SILVER_BULLET_BASE/$1 ]; then
+        echo "$SILVER_BULLET_BASE/$1 does not exist"
+        return 1
+    fi
+    
+    export VERINT_BASE=$SILVER_BULLET_BASE/$1
+    cd $VERINT_BASE
+    return 0
+}
+
+export -f ipms_workon
+
+#------------------------------------------------------------
+# Name:         ipms_restart
+# Purpose:      restarts both the ipms-proxy and confd
+#               will use the value of IPMS_CDB_DIR
+# Parameter(s): none.
+#-------------------------------------------------------------
+ipms_restart()
+{
+    if [ -z $VERINT_BASE ]; then
+        echo "Please use 'ipms-workon' before calling this method"
+        return 1
+    fi
+
+    # stop Daemon Tools if exists
+    sudo svc -d /service/proxy
+    sudo svc -d /service/confd
+
+    # kill proxy if it's running 
+    ps -ef | grep proxy+1 | grep -v grep | awk '{ print $2}' | xargs sudo kill
+
+    # stop confd
+    /usr/confd/bin/confd --stop
+
+    sleep 1
+
+    sudo svc -u /service/proxy/
+    sudo svc -u /service/confd/
+        
+}
+
+export -f ipms_restart
+
+#------------------------------------------------------------
+# Name:         ipms_install
+# Purpose:      Installs IPMS and Confd along with YANG schema
+#               will use the value of VERINT_BASE
+# Parameter(s): 1. Mandatory. desired version to give
+#        2. Optional. -p to install Proxy as well
+#-------------------------------------------------------------
+ipms_install()
+{
+    if [ -z $VERINT_BASE ]; then
+        echo "Please use 'ipms-workon' before calling this method"
+        return 1
+    fi
+
+    INSTALL_PROXY=
+    OPTIND=1
+    while getopts ":v:p:h" Option
+    do
+        case $Option in
+            v) VERSION="$OPTARG";;
+            p) INSTALL_PROXY=TRUE;;
+            h) echo "Usage: ipms_install -v <VERSION> [-p]" $0;echo "       add -p flag if you want to install Proxy as well";return 0;;
+        esac
+    done
+
+    if [ -z $1 ]; then
+        echo "Usage: ipms_install -v <VERSION> [-p]" $0
+        echo "Example:  ipms_install -v 1.2.3.4"
+        echo "          add -p flag if you want to install Proxy as well"
+        return 1
+    fi
+
+    $VERINT_BASE/IPMS/ipms_dev_install.sh $VERSION
+    if [ "$INSTALL_PROXY" = "TRUE" ]; then
+        $VERINT_BASE/IPMS/proxy_dev_install.sh $VERSION
+    fi
+    
+    return $?
+}
+export -f ipms_install
+
+function confd_install()
+{
+    if [ -z $VERINT_BASE ]; then
+        echo "Please use 'ipms-workon' before calling this method"
+        return 1
+    fi
+
+    if [ ! -e $HOME/.confd-install.tar ]; then
+        echo "Unable to find .confd-install.tar in the home director"
+        return 1
+    fi
+
+    tar xvf $HOME/.confd-install.tar
+    if [ $? -ne 0 ]; then
+        echo "Unable to extract .confd-install.tar"
+        return 1
+    fi
+
+    ./confd-install/install.sh DEV
+    rc=$?
+    \rm -Rf .confd-install
+
+    if [ $rc -ne 0 ]; then
+        echo "Failed to install confd"
+        return 1
+    fi
+}
+export -f confd_install
+

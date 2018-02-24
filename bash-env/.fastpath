@@ -1,0 +1,1163 @@
+# aliases
+alias diff='diff -up'
+alias vi='vim'
+alias checkpatch='patch -p0 --dry-run'
+alias patch='patch -p0'
+alias restorevncconfig='vncconfig -iconic &'
+alias 6wind='[[ ! -z $ROOTDIR ]] && cd $ROOTDIR'
+alias verint='[[ ! -z $VERINT_BASE ]] && cd $VERINT_BASE'
+alias patchdir='[[ ! -z $VERINT_PATCH_DIR ]] && cd $VERINT_PATCH_DIR'
+alias mips-gdbtui='$ROOTDIR/debug/bin/mips-unknown-linux-gnu-gdbtui'
+alias mips-addr2line='mips64-nlm-linux-addr2line'
+
+export LC_ALL=en_US
+
+# environment setup
+ulimit -c unlimited
+export EDITOR=vim
+
+# exports
+export SOURCE_BASE=$HOME/sources
+export SIXWIND_BASE=$SOURCE_BASE/6wind
+export SILVER_BULLET_BASE=$SOURCE_BASE/silver-bullet
+export SB_SVN_URL="http://tlvsvn1/svn/repos-silver-bullet"
+
+#-------------------------------------------------------------
+# Name:         check_build_dirs
+# Purpose:      make sure that sources, sources/silver-bullet,
+#               and sources/6wind directories exist
+# Parameter(s): none
+#-------------------------------------------------------------
+check_build_dirs(){
+    [ -d $SILVER_BULLET_BASE ] || mkdir -p $SILVER_BULLET_BASE
+    [ -d $SIXWIND_BASE ] || mkdir -p $SIXWIND_BASE
+}
+export -f check_build_dirs
+
+#-------------------------------------------------------------
+# Name:         echo_error
+# Purpose:      echoes the passed-in parameters to stderr
+# Parameter(s): variable
+#-------------------------------------------------------------
+echo_error(){
+    echo "$@" >&2
+}
+export -f echo_error
+
+#-------------------------------------------------------------
+# Name:         patch_6wind
+# Purpose:      patch the 6wind source code using 
+#               modified files in the svn
+# Parameter(s): none
+#-------------------------------------------------------------
+patch_6wind(){
+    if [ -z $VERINT_PATCH_DIR ]; then
+        echo_error "'exportvars' must be run prior to running 'patch_6wind'"
+        return 1
+    fi
+
+    cat $VERINT_PATCH_DIR/patch_registry | sed -e 's/^[ \t]*//' | grep -v "^$\|^#" | awk '{print "''" $1 " " $2"''" }' | while read line
+    do
+        left_file=`echo $line | cut -f 1 -d " "`
+        right_file=`echo $line | cut -f 2 -d " "`
+        if [ ! -e ${VERINT_PATCH_DIR}/${left_file} ]; then
+            #echo_error "${VERINT_PATCH_DIR}/${left_file} does not exist"
+            continue
+        elif [ ! -f ${VERINT_PATCH_DIR}/${left_file} ]; then
+            echo_error "${VERINT_PATCH_DIR}/${left_file} is not a file"
+            continue
+        elif [ -d ${ROOTDIR}/${right_file} ]; then
+            right_file=${right_file}/${left_file}
+        fi
+        left_file=${VERINT_PATCH_DIR}/${left_file}
+        right_file=${ROOTDIR}/${right_file}
+        left_file_sha1=`sha1sum ${left_file} | cut -f 1 -d " "`
+        # if the file does not exist in 6wind, 
+        # prevent an error printing when we execute the sha1sum command
+        right_file_sha1="0"
+        if [ -f ${right_file} ]; then
+            right_file_sha1=`sha1sum ${right_file} | cut -f 1 -d " "`
+        fi
+        if [ "$left_file_sha1" != "$right_file_sha1" ]; then
+            \rm -f $right_file
+            cp $left_file $right_file
+        fi
+    done
+}
+export -f patch_6wind
+
+#-------------------------------------------------------------
+# Name:         clean_path
+# Purpose:      removes rmi or netos paths from PATH
+#               this is used when selecting a sandbox 
+#               to work on
+# Parameter(s): none
+#-------------------------------------------------------------
+clean_path(){
+    export PATH=`echo $PATH | tr ':' '\n' | awk '$0 !~ "/rmi/"' | paste -sd:`
+    export PATH=`echo $PATH | tr ':' '\n' | awk '$0 !~ "/netos/"' | paste -sd:`
+}
+export -f clean_path
+
+#-------------------------------------------------------------
+# Name:         get_path_from_sandbox
+# Purpose:      given a file system path return the URL 
+#               of the svn this path was generated from
+# Parameter(s): path to the file system directory
+# return:       1 if the path is not a working svn directory
+#               0 otherwise
+#               the function outputs the URL upon success
+#
+#-------------------------------------------------------------
+get_svn_url_from_fs_path(){
+    output=`svn info $1 | grep "URL:" | cut -f 2 -d " "`
+
+    if [ "$?" != "0" ]; then
+        echo_error "get_svn_url_from_fs_path failed"
+        return 1
+    fi
+
+    echo $output
+    return 0
+}
+export -f get_svn_url_from_fs_path
+
+#-------------------------------------------------------------
+# Name:         get_netos_sdk_version
+# Purpose:      determine the netos sdk version
+# Parameter(s): url of an svn branch/tag
+#-------------------------------------------------------------
+get_netos_sdk_version(){
+
+    if [ -z $1 ]; then
+        echo_error "get_netos_sdk_version called without parameter"
+        return 1
+    fi
+
+    # 6wind uses a naming convention for the releases that specifies
+    # the SDK name. the following retrieves the sdk version
+    #   1. list the directories under the branch's 6wind/ffu/patch
+    #      directory. the command lists the directories 
+    #      in lexigraphical order
+    #   2. get the last directory only, as that is the 6wind 
+    #      release this branch is using
+    #   3. remove the trailing slash
+    #   4. get the last token where the separator is '-'.
+    #      that is the sdk version. for example:
+    #      a. svn list http://tlvsvn1/svn/repos-silver-bullet/branches/B_1_0_PKG_1_FP_Sub1/6wind/ffu/patch/
+    #
+    #         produces the output
+    #
+    #         6WINDGate-3.29.1-SDS-XLP-CCPU-PP81-NETL-SDK-2.1.1/
+    #         6WINDGate-3.31.0-SDS-XLP-RSYS-PP81-NETL-SDK-2.2.2/
+    #
+    #      b. tail -1
+    #
+    #         produces the output
+    #
+    #         6WINDGate-3.31.0-SDS-XLP-RSYS-PP81-NETL-SDK-2.2.2/
+    #
+    #      c. cut -f 1 -d /
+    #
+    #         produces the output
+    #
+    #         6WINDGate-3.31.0-SDS-XLP-RSYS-PP81-NETL-SDK-2.2.2
+    #
+    #      d. awk -F- '{print $NF}'
+    #
+    #         produces the output
+    #
+    #         2.2.2
+    sdk_version=`svn list $1/6wind/ffu/patch/ 2>/dev/null | tail -1 | cut -f 1 -d / |  awk -F- '{print $NF}'`
+    if [ "$?" != "0" ]; then
+        # try to get the patch directory from the local fs
+        sdk_version=`ls -1 $1/6wind/ffu/patch/ | tail -1 | cut -f 1 -d / |  awk -F- '{print $NF}'`
+        if [ "$?" != "0" ]; then
+            echo_error "unable to retrieve sdk version from svn"
+            return 1
+        fi
+    fi
+    echo $sdk_version
+
+    return 0
+}
+export -f get_netos_sdk_version
+
+#-------------------------------------------------------------
+# Name:         get_6wind_archive_name
+# Purpose:      retrieve the name of the 6wind archive name,
+#               so it can be passed to the gen-6wind.sh script
+# Parameter(s): 1. mandatory. the URL of the branch
+#-------------------------------------------------------------
+get_6wind_archive_name(){
+    if [ -z $1 ]; then
+        echo_error "get_6wind_archive_name called without parameter"
+        return 1
+    fi
+    sdk_version=`svn list $1/6wind/ffu/patch/ 2>/dev/null | tail -1 | cut -f 1 -d "/"`
+    if [ "$?" != "0" ]; then
+        sdk_version=`ls -1 $1/6wind/ffu/patch/ | tail -1 | cut -f 1 -d "/"`
+        if [ "$?" != "0" ]; then
+            echo_error "unable to retrieve sdk version from svn"
+            return 1
+        fi
+    fi
+    echo $sdk_version
+
+    return 0
+}
+export -f get_6wind_archive_name
+
+#-------------------------------------------------------------
+# Name:         get_build_context
+# Purpose:      determines whether this is an inline, cyber,
+#               or ci build based on the svn name.
+# Parameter(s): 1. Optional. the switch -i, as indication 
+#                  for an inline build
+#               2. optional. the name of the svn branch/tag.
+#                  if not provided then the function attempts
+#                  to detect it from the svn info
+#-------------------------------------------------------------
+get_build_context() {
+    IS_INLINE=false
+    # must set these variable before the loop. otherwise things don't work
+    OPTIND=1
+    while getopts ":i" Option
+    do
+        case $Option in
+            i) IS_INLINE=true
+               shift
+               ;;
+        esac
+    done
+
+    SVN_NAME="$1"
+    if [ -z $SVN_NAME ]; then
+        output=`svn info $VERINT_BASE/ 2>/dev/null | grep URL`
+        # for some reason we do not an svn-based sandbox.
+        # in cyber we remove all svn hidden files.
+        # if this is the case, use the basename of VERINT_BASE
+        if [ "$?" != "0" ]; then
+            output=$VERINT_BASE
+        else
+            output=`echo $output | cut -f 2 -d " "`
+        fi
+        SVN_NAME=`basename $output`
+    fi
+
+    # cyber branch names include the word CYBER
+    echo "$SVN_NAME" | grep CYBER &>/dev/null
+    if [ "$?" == "0" ]; then
+        # if the -i flag was set then the user wants to build the inline flavor of cyber
+        if [ "$IS_INLINE" == "true" ]; then
+            echo "INLINE"
+        else
+            echo "CYBER"
+        fi
+        return 0
+    fi
+
+    # neither one of the above did not work.
+    # try tag format, retrieving the first token 
+    # of a tag name (xx.x.x.xxxx)
+    TAG_INDICATOR=`echo "$SVN_NAME" | cut -f 1 -d .`
+    if [ "$?" != "0" ]; then
+        # if there is no period in the name then this is not a tag,
+        # and we haven't been able to detect this as inline or cyber,
+        # so this is CIP
+        echo "CIP"
+    fi
+
+    # cyber tags begin with 11
+    if [ "$TAG_INDICATOR" == "11" ]; then
+        echo "CYBER"
+        return 0
+    fi
+
+    # inline tags begin with 13
+    if [ "$TAG_INDICATOR" == "13" ]; then
+        echo "INLINE"
+        return 0
+    fi
+
+    echo "CIP"
+    return 0
+}
+export -f get_build_context
+
+#-------------------------------------------------------------
+# Name:         exportvars
+# Purpose:      sets the environment variables 
+#               that the particular silver-bullet 
+#               needs (XLR/XLP). 
+#               does not check that the directories actually 
+#               exist
+# Parameter(s): 1. Optional. the switch -i, as indication 
+#                  for an inline build
+#               2. mandatory. the name of the svn branch/tag 
+#               3. mandatory. silver bullet sandbox name
+#               4. mandatory. 6wind code directory name
+#-------------------------------------------------------------
+exportvars(){
+    EXTRA_FLAGS=""
+    # the first thing we do is detect whether the -i switch was passed.
+    # if it was passed, we shift the parameters, and we get the rest 
+    # of them.
+    # must set these variable before the loop. otherwise things don't work
+    OPTIND=1
+    while getopts ":i" Option
+    do
+        case $Option in
+            i) EXTRA_FLAGS="-i"
+               shift
+               ;;
+        esac
+    done
+
+    if [ -z $1 ] || [ -z $2 ]; then
+        echo_error "Usage: exportvars [-i (inline)] <silver-bullet sandbox> <6wind code directory> [svn name]"
+        return 1
+    fi
+
+    # clean the path from both xlr & xlp netlogic paths
+    # so that we can set either one
+    clean_path
+    export VERINT_BASE=$SILVER_BULLET_BASE/$1
+    export MYROOT=$SIXWIND_BASE/$2
+    export ROOTDIR=$MYROOT
+    export ADDON_PATH=$VERINT_BASE/6wind/ffu
+    export EXTRA_CONFIG=$ADDON_PATH/scripts/extra_config
+    export DIST_MCORE_ADDON=$ADDON_PATH
+    export DIST_PORTS_ADDON=$ADDON_PATH/ports
+    
+    CONFIG_TB_MODE=""
+    CONFIG_TB_MODE=`get_build_context $EXTRA_FLAGS "$3"`
+    if [ "$?" != "0" ]; then
+        echo_error "unable to determine build context"
+        return 1
+    fi
+    export CONFIG_TB_MODE
+
+    export CSCOPE_DB="`find $VERINT_BASE/ -maxdepth 1 -name "*.cscope" 2>/dev/null | head -1` `find $ROOTDIR/ -maxdepth 1 -name "*.cscope" 2>/dev/null | head -1`"
+
+    svn_url=`get_svn_url_from_fs_path $VERINT_BASE`
+    if [ "$?" != "0" ]; then
+        echo_error "unable to retrieve VERINT_BASE ($VERINT_BASE) svn url"
+        return 1
+    fi
+
+    netlogic_arch=`get_netos_sdk_version $svn_url`
+    if [ "$?" != "0" ]; then
+        echo_error "exportvars unable to determine netlogic architecture from the svn path"
+        return 1
+    fi
+
+    sixwind_patch_dir=`get_6wind_archive_name $svn_url`
+    if [ "$?" != "0" ]; then
+        echo_error "exportvars unable to determine the 6wind patch directory from the svn path"
+        return 1
+    fi
+
+    if [ "$netlogic_arch" == "1.6.0" ]; then
+        if [ -f /opt/rmi/1.6/etc/bash.bashrc ]; then
+            . /opt/rmi/1.6/etc/bash.bashrc
+        fi
+        export VERINT_PATCH_DIR=$VERINT_BASE/6wind/ffu/patch/6WINDGate-2.27.1-SDS-XLRS-NETL-RMI-SDK-1.6.0
+        export CSCOPE_DB=${CSCOPE_DB}" /opt/rmi/1.6/rmi.cscope"
+    elif [ "$netlogic_arch" == "2.1.1" ]; then
+        # XLP 2.1.1 exports
+        export NETL_SDK_DIR=/opt/netos/sdk-base-2.1.1 
+        export HAL_DIR=${NETL_SDK_DIR}/libraries/hal
+        export FDT_DIR=${NETL_SDK_DIR}/libraries/fdt
+        export PATH=${NETL_SDK_DIR}/toolchains_bin/mipscross/linux_plt/bin:${PATH}
+        export PATH=${NETL_SDK_DIR}/toolchains_bin/mipscross/elf/bin:${PATH}
+        export LD_LIBRARY_PATH=${NETL_SDK_DIR}/toolchains_bin/mipscross/linux_plt/i686-pc-linux-gnu/mips64-nlm-linux/lib
+        export VERINT_PATCH_DIR=$VERINT_BASE/6wind/ffu/patch/6WINDGate-3.29.1-SDS-XLP-CCPU-PP81-NETL-SDK-2.1.1
+        export CSCOPE_DB=${CSCOPE_DB}" ${NETL_SDK_DIR}/sdk-base-2.1.1.cscope"
+    elif [ "$netlogic_arch" == "2.2.2" ]; then
+        export NETL_SDK_DIR=/opt/netos/sdk-base-2.2.2
+        export HAL_DIR=${NETL_SDK_DIR}/libraries/hal
+        export FDT_DIR=${NETL_SDK_DIR}/libraries/fdt
+        export TOOLCHAINS_DIR=${NETL_SDK_DIR}/toolchains_bin
+        export PATH=${TOOLCHAINS_DIR}/mipscross/linux_plt/bin:${PATH}
+        export PATH=${TOOLCHAINS_DIR}/mipscross/elf/bin:${PATH}
+        export LD_LIBRARY_PATH=${TOOLCHAINS_DIR}/mipscross/linux/i686-pc-linux-gnu/mips64-nlm-linux/lib                      
+        export MTOPDIR=$VERINT_BASE/fast_path/nae
+        export VERINT_PATCH_DIR=$VERINT_BASE/6wind/ffu/patch/${sixwind_patch_dir}
+        export CSCOPE_DB="${CSCOPE_DB} ${NETL_SDK_DIR}/sdk-base-2.2.2.cscope"
+        export FASTPATH_MAKE_PATH=mcore/fastpath/xlp/linuxu
+        export NETLOGIC_SDK_VERSION=2.2.2
+    elif [ "$netlogic_arch" == "2.2.4" ]; then
+        export NETL_SDK_DIR=/opt/netos/sdk-base-2.2.4
+        export HAL_DIR=${NETL_SDK_DIR}/libraries/hal
+        export FDT_DIR=${NETL_SDK_DIR}/libraries/fdt
+        export TOOLCHAINS_DIR=${NETL_SDK_DIR}/toolchains_bin
+        export LD_LIBRARY_PATH=${TOOLCHAINS_DIR}/mipscross/linux/i686-pc-linux-gnu/mips64-nlm-linux/lib
+        export PATH=${TOOLCHAINS_DIR}/mipscross/elf/bin:${PATH}
+        export PATH=${TOOLCHAINS_DIR}/mipscross/linux/bin:${PATH}
+        export MTOPDIR=$VERINT_BASE/fast_path/nae
+        export VERINT_PATCH_DIR=$VERINT_BASE/6wind/ffu/patch/${sixwind_patch_dir}
+        export CSCOPE_DB="${CSCOPE_DB} ${NETL_SDK_DIR}/sdk-base-2.2.4.cscope"
+        export FASTPATH_MAKE_PATH=mcore/fastpath/xlp/fastpath
+        export NETLOGIC_SDK_VERSION=2.2.4
+        export OPT_TYPE=SIZE
+    fi
+}
+export -f exportvars
+
+#-------------------------------------------------------------
+# Name:         workon
+# Purpose:      cd's to the specified sandbox and sets
+#               the appropriate environment variables.
+#               if the second parameter is not provided
+#               then it is assumed that the name of the 
+#               6wind directory is the same as that of
+#               the silver-bullet sandbox
+#               both directories (silver-bullet sandbox 
+#               and 6wind) must exist
+# Parameter(s): 1. Optional. the switch -i, as indication 
+#                  for an inline build
+#               2. Mandatory. Name of sandbox directory
+#               3. Optional. Name of the 6wind directory.
+#                  If ommitted, the name of the sandbox
+#                  is assumed to be the name of the 6wind
+#                  directory as well.
+#-------------------------------------------------------------
+workon(){
+    SILVER_BULLET_SANDBOX=""
+    SIXWIND_SANDBOX=""
+    EXTRA_FLAGS=""
+
+    # must set these variable before the loop. otherwise things don't work
+    OPTIND=1
+    while getopts ":i" Option
+    do
+        case $Option in
+            i) EXTRA_FLAGS="-i"
+               shift
+               ;;
+        esac
+    done
+
+    if [ -z $1 ]; then
+        echo_error "Usage: workon [-i (inline)] <silver-bullet sandbox> [6wind code dir]"
+        return 1
+    fi
+
+    SILVER_BULLET_SANDBOX="$1"
+    if [ ! -d $SILVER_BULLET_BASE/$1 ]; then
+        echo_error "$SILVER_BULLET_BASE/$1 does not exist"
+        return 1
+    fi
+
+    SIXWIND_SANDBOX="$2"
+    if [ -z $SIXWIND_SANDBOX ]; then
+        SIXWIND_SANDBOX=$SILVER_BULLET_SANDBOX
+    fi
+
+    if [ ! -d $SIXWIND_BASE/$SIXWIND_SANDBOX ]; then
+        echo_error "$SIXWIND_BASE/$SIXWIND_SANDBOX does not exist"
+        return 1
+    fi
+
+    BUILD_DIR=$SILVER_BULLET_BASE/$SILVER_BULLET_SANDBOX
+    cd $BUILD_DIR
+    exportvars $EXTRA_FLAGS $SILVER_BULLET_SANDBOX $SIXWIND_SANDBOX
+    if [ "$?" != "0" ]; then
+        return 1
+    fi
+
+    if [ -f $ROOTDIR/debug/.gdbinit ]; then
+        cp $ROOTDIR/debug/.gdbinit $HOME/
+    fi
+
+    if [ "$VIM_USES_CSCOPE" == "yes" ]; then
+        changed_files=`svn status | grep -v "^\?\|PRU\|6wind\/ffu\/patch" | awk '{ print $2 }'`
+        sorted_by_date=`ls -1t $changed_files *cscope 2>/dev/null | head -1`
+
+        if [ "$?" == "0" ]; then
+            (echo $sorted_by_date | grep cscope 2>&1) >/dev/null
+            if [ "$?" != "0" ]; then
+                mkcscope
+            fi
+        fi
+    fi
+
+    return 0
+}
+export -f workon
+
+workon_cyber(){
+    CONFIG_TB_MODE=CYBER
+    export CONFIG_TB_MODE
+    workon $@ 
+}
+export -f workon_cyber
+#-------------------------------------------------------------
+# Name:         __print_mk_usage
+# Purpose:      A private function. prints out a usage
+#               statement common to both svnco and mksb
+# Parameter(s): the name of the function that invoked this one
+#-------------------------------------------------------------
+__print_mk_usage(){
+    echo -e "Usage:  $1 -n <name> [-b <branch name> | -t <tag name>] [-r <revision number>] [-s <sixwind name>] [-p]\n"     \
+                   "        -n name            Mandatory. The name of the sandbox to create\n"                              \
+                   "        -b branch          Optional. The name of the branch to create the sandbox from\n"               \
+                   "        -t tag             Optional. The name of the tag to create the sandbox from\n"                  \
+                   "        -r revision        Optional. The number of the revision that should be retrieved\n"             \
+                   "        -s sixwind name    Optional. An alternate name for the 6wind directory.\n"                      \
+                   "                           If not specified, the silver bullet sandbox name is used\n"                  \
+                   "        -p                 A flag indicating that the build is in performance mode.\n"                  \
+                   "                           If set, then the SB_RELEASE environment variable is exported\n"              \
+                   "        '-b' and '-t' are mutually exclusive. If neither is specified\n"                                \
+                   "        then the sandbox is created from the trunk. If both are specified\n"                            \
+                   "        the latter is taken.\n" >&2
+}
+export -f __print_mk_usage
+
+#-------------------------------------------------------------
+# Name:         svnco
+# Purpose:      checks out the specified silver-bullet branch.
+# Parameter(s): see usage
+#-------------------------------------------------------------
+svnco(){
+    SVN_REVISION=""
+    SVN_DIR="trunk"
+    SANDBOX_NAME=""
+    SIXWIND_NAME=""
+    SVN_NAME=""
+    EXTRA_FLAGS=""
+    is_tag=false
+
+    # must set these variable before the loop. otherwise things don't work
+    OPTIND=1
+    while getopts ":n:b:t:r:s:pi" Option
+    do
+        case $Option in
+            b) SVN_DIR="branches/${OPTARG}";;
+            n) SANDBOX_NAME="${OPTARG} ";;
+            t) SVN_DIR="tags/${OPTARG} "
+                is_tag=true
+                ;;
+            r) SVN_REVISION="-r ${OPTARG} ";;
+            s) SIXWIND_NAME="${OPTARG} ";;
+            i) EXTRA_FLAGS="-i";;
+        esac
+    done
+
+    if [ -z $SANDBOX_NAME ]; then
+        __print_mk_usage "svnco"
+        return 1
+    fi
+
+    SVN_NAME=`basename $SVN_DIR`
+
+    # ensure that the build directories exist
+    check_build_dirs
+
+    if [ "$SIXWIND_NAME" == "" ]; then
+        SIXWIND_NAME=$SANDBOX_NAME
+    fi
+
+    SILVER_BULLET_SANDBOX=${SILVER_BULLET_BASE}/${SANDBOX_NAME}
+
+    if [ -e "$SILVER_BULLET_SANDBOX" ]; then
+        echo "Remove previous sandbox"
+    fi
+    sudo \rm -Rf $SILVER_BULLET_SANDBOX
+
+    svn co $SB_SVN_URL/${SVN_DIR} ${SVN_REVISION} ${SILVER_BULLET_SANDBOX}
+    if [ "$?" != "0" ]; then
+        echo_error "Failed to checkout the silver bullet source"
+        return 1
+    fi
+
+    # exports environment variable and builds the cscope database
+    exportvars $EXTRA_FLAGS $SANDBOX_NAME $SIXWIND_NAME $SVN_NAME
+
+    yang_version=1.0.0.`svnversion $VERINT_BASE | cut -f 2 -d : | cut -f 1 -d M`
+    if [ "$is_tag" == "true" ]; then
+        yang_version=`basename $SVN_DIR`
+    fi
+    if [ -f $VERINT_BASE/IPMS/YANG/make.sh ]; then
+        cd $VERINT_BASE/IPMS/YANG/
+    else
+        cd $VERINT_BASE/IPMS/YangModel/
+    fi
+    sudo ./make.sh $yang_version
+    ret=$?
+    cd -
+    if [ $ret -ne 0 ]; then
+        echo_error "The yang schema build failed"
+        return 1
+    fi
+    return 0
+}
+export -f svnco
+
+#-------------------------------------------------------------
+# Name:         mk6wind
+# Purpose:      runs /opt/silver-bullet/scripts/{processor}/gen-6wind.sh
+#               to create a new 6wind code base
+# Parameter(s): see usage
+#-------------------------------------------------------------
+mk6wind(){
+    USAGE=`echo -e "Usage:  mk6wind -n <name>\n"                                \
+                   "        -n     The name of the sixwind sandbox to create\n" \
+                   "        -p     If specified - then this is a production build\n" \
+                   "        -i     If specified - Cyber-inline mode is being built\n"`
+    SB_RELEASE=FALSE
+    SB_RUNNING_MODE=CIP
+
+    if [ -z $VERINT_BASE ]; then
+        echo_error "'exportvars' must be run prior to running 'mk6wind'"
+        return 1
+    elif [ ! -d $VERINT_BASE ]; then
+        echo_error "$VERINT_BASE must be created prior to running 'mk6wind'"
+        return 1
+    fi
+
+    # must set these variable before the loop. otherwise things don't work
+    OPTIND=1
+    # the -i flag might be passed in, but we ignore it
+    while getopts ":n:pi" Option
+    do
+        case $Option in
+            n) SIXWIND_NAME="${OPTARG} ";;
+            p) SB_RELEASE=TRUE;;
+            i) ;;
+        esac
+    done
+
+    #prepare flags for Silver bullet compilation
+    SB_CMPL_FLAGS="$SB_RELEASE $CONFIG_TB_MODE"
+
+    if [ -z $SIXWIND_NAME ]; then
+        echo -e "$USAGE" >&2
+        return 1
+    fi
+
+    # ensure that the build directories exist
+    check_build_dirs
+
+    SIXWIND_SANDBOX=$SIXWIND_BASE/${SIXWIND_NAME}
+   
+    svn_url=`get_svn_url_from_fs_path $VERINT_BASE`
+    if [ "$?" != "0" ]; then
+        echo_error "unable to retrieve VERINT_BASE ($VERINT_BASE) svn url"
+        return 1
+    fi
+
+    netlogic_arch=`get_netos_sdk_version $svn_url`
+    if [ "$?" != "0" ]; then
+        echo_error "mk6wind failed to retrieve the netlogic architecture from sandbox path"
+        return 1
+    fi
+
+    netlogic_dir=""
+    sixwind_archive_name=""
+    if [ "$netlogic_arch" == "1.6.0" ]; then
+        netlogic_dir="xlr"
+    elif [ "$netlogic_arch" == "2.1.1" ]; then
+        netlogic_dir="xlp-2.1"
+    elif [ "$netlogic_arch" == "2.2.2" -o "$netlogic_arch" == "2.2.4" ]; then
+        netlogic_dir="xlp-2.2"
+        if [ "$netlogic_arch" == "2.2.4" ]; then
+            netlogic_dir="xlp-2.2.4"
+        fi
+        sixwind_archive_name=`get_6wind_archive_name $svn_url`
+        if [ "$?" != "0" ]; then
+            echo_error "mk6wind unable to determine the 6wind archive name from the svn path"
+            return 1
+        fi
+    fi
+
+    /opt/silver-bullet/scripts/${netlogic_dir}/gen-6wind.sh $SIXWIND_SANDBOX $sixwind_archive_name $SB_CMPL_FLAGS 2>&1
+    if [ "$?" != "0" ]; then
+        echo_error "mk6wind: gen-6wind.sh failed"
+        return 1
+    fi  
+
+    return 0
+}
+export -f mk6wind
+
+#-------------------------------------------------------------
+# Name:         mksb
+# Purpose:      calls both svnco and
+#               mk6wind to create a full development 
+#               environment
+# Parameter(s): 
+#-------------------------------------------------------------
+mksb(){
+    NO_ARGS=0
+    SVN_REVISION=""
+    SANDBOX_NAME=""
+    SIXWIND_NAME=""
+    SB_RELEASE=FALSE
+    SB_RUNNING_MODE=CI
+    TB_COMPILATION_FLAGS=""
+    SVN_NAME=""
+
+    # must set these variable before the loop. otherwise things don't work
+    OPTIND=1
+    while getopts ":n:b:r:t:s:pi" Option
+    do
+        case $Option in
+            n) SANDBOX_NAME="${OPTARG} ";;
+            s) SIXWIND_NAME="${OPTARG} ";;
+            b) SVN_NAME="${OPTARG} ";;
+            t) SVN_NAME="${OPTARG} ";;
+            p) SB_RELEASE=TRUE
+               TB_COMPILATION_FLAGS+="-p "
+               ;;
+            i) SB_RUNNING_MODE=CYBER
+               TB_COMPILATION_FLAGS+="-i "
+               ;;
+        esac
+    done
+
+    if [ -z $SANDBOX_NAME ]; then
+        __print_mk_usage "mksb"
+        return 1
+    fi
+
+    if [ "$SIXWIND_NAME" == "" ]; then
+        SIXWIND_NAME=$SANDBOX_NAME
+    fi
+
+    svnco $@
+    if [ "$?" != "0" ]; then
+        echo_error "svnco failed"
+        return 1
+    fi
+
+    mk6wind -n ${SIXWIND_NAME} $TB_COMPILATION_FLAGS
+
+    if [ "$?" != "0" ]; then
+        echo_error "mk6wind failed"
+        return 1
+    fi
+
+    return 0
+}
+export -f mksb
+
+fastpath(){
+    if [ "$1" != "make" -a "$1" != "only" -a "$1" != "clean" ]; then
+        echo "Usage: fastpath [clean|make|only]" >&2
+        return 1
+    fi
+
+    if [ -z $ROOTDIR ]; then
+        echo "You must first run the 'workon' command" >&2
+        return 1
+    fi
+
+    cd $ROOTDIR
+    make mcore/fastpath/xlp/linuxu_p${1} 2>&1
+}
+export -f fastpath
+
+mk(){
+    b_mk_nae=false
+    b_mk_update=false
+    b_mk_fp=false
+    b_mk_linux=false
+    b_mk_fpm=false
+    b_mk_mop=false
+    b_mk_logger=false
+    b_mk_libs=false
+    b_mk_utils=false
+    b_mk_prov=false
+    b_mk_image=false
+    b_mk_clean=false
+    b_mk_6wind=false
+    b_mk_confd=false
+    b_mk_yang=false
+    b_mk_ipms=false
+    b_mk_dtb=false
+    b_mk_all=false
+    b_mk_performance=false
+    b_mk_threads=false
+    USAGE=`echo -e  "Usage: mk {entity/ies} {modifier/s}\n"                                                                             \
+                    "       mk all                  equivalent to 'build-nae.sh' then 'cd $ROOTDIR' and 'make'\n"                       \
+                    "       mk nae                  runs build-nae.sh\n"                                                                \
+                    "       mk dtb                  makes nae and ports/mcore/fastpath/xlp/sysconfig and creates the dtb file\n"        \
+                    "       mk <fpm|fpm-addon>      make the fpm-addon, without generating an image\n"                                  \
+                    "       mk <logger|fpm-logger>  make the fpm-logger, without generating an image\n"                                 \
+                    "       mk mop                  make the mop, without generating an image\n"                                        \
+                    "       mk <utils|libutils>     make libutils, without generating an image\n"                                       \
+                    "       mk <prov|libprov|libprovisioning>     make libutils, without generating an image\n"                         \
+                    "       mk <ipms|libipms|libipms-api|ipms-api>     make libipms-api, without generating an image\n"                 \
+                    "       mk <confd|libconfd>     make libipms-api, without generating an image\n"                                    \
+                    "       mk yang                 make a yang schema, using this sandbox revision\n"                                  \
+                    "       mk libs                 make all the libraries that the linux processes depened on\n"                       \
+                    "       mk linux                make all the libraries that the linux processes depened on, and the processes\n"    \
+                    "       mk <fastpath|fp>        make the fastpath, without generating an image\n"                                   \
+                    "       mk <threads|thread|libthreads|libthread>     make libthreads\n"                                             \
+                    " also: mk dtb fpm-addon image\n"                                                                                   \
+                    "   or: mk fpm logger image\n"                                                                                      \
+                    "   or: mk libutils\n"                                                                                              \
+                    "   or: mk nae fastpath image\n"                                                                                    \
+                    "       you get the idea..."`
+
+    if [ "$#" == "0" ]; then
+        echo -e "$USAGE"
+        return 1
+    fi
+    while (( "$#" )); do
+        case "$1" in
+            all)  b_mk_all=true 
+                b_mk_yang=true
+                ;;
+            nae) 
+                if [ ! -f ${MTOPDIR}/naesoft/build-nae.sh ]; then
+                    if [ "$NETLOGIC_SDK_VERSION" == "2.2.4" ]; then
+                        echo_error "We do not build the nae separately in SDK 2.2.4. Please run 'mk dtb' instead"
+                        return 1
+                    fi
+                    if [ -z $MTOPDIR ]; then
+                        echo_error "MTOPDIR environment variable is not set. Did you run 'workon'?"
+                    else
+                        echo_error "${MTOPDIR}/naesoft/build-nae.sh does not exist"
+                    fi
+
+                    return 1
+                fi
+                b_mk_nae=true
+                ;;
+            dtb) if [ -z $MTOPDIR ]; then
+                     echo_error "MTOPDIR environment variable is not set. Did you run 'workon'?"
+                     return 1
+                fi
+                b_mk_dtb=true
+                ;;
+            fastpath)  b_mk_fp=true
+                ;;
+            fp)  b_mk_fp=true
+                ;;
+            linux) b_mk_linux=true
+                ;;
+            fpm) b_mk_fpm=true
+                ;;
+            fpm-addon) b_mk_fpm=true
+                ;;
+            mop) b_mk_mop=true
+                ;;
+            logger) b_mk_logger=true
+                ;;
+            fpm-logger) b_mk_logger=true
+                ;;
+            image) b_mk_image=true
+                ;;
+            libutils) b_mk_utils=true
+                ;;
+            utils) b_mk_utils=true
+                ;;
+            prov) b_mk_prov=true
+                ;;
+            libprov) b_mk_prov=true
+                ;;
+            libprovisioning) b_mk_prov=true
+                ;;
+            libconfd) b_mk_confd=true
+                ;;
+            confd) b_mk_confd=true
+                ;;
+            yang) b_mk_yang=true
+                ;;
+            libipms-api) b_mk_ipms=true
+                ;;
+            libipms) b_mk_ipms=true
+                ;;
+            ipms) b_mk_ipms=true
+                ;;
+            ipms-api) 
+                b_mk_ipms=true
+                ;;
+            thread) b_mk_threads=true
+                ;;
+            threads) b_mk_threads=true
+                ;;
+            libthreads) b_mk_threads=true
+                ;;
+            libthread) b_mk_threads=true
+                ;;
+            clean)  if [ "$b_mk_nae" == "true" ]; then
+                        echo "There is no separate clean of the nae code"
+                        return 1
+                    elif [ "$b_mk_update" == "true" ]; then
+                        echo_error "I don't understand what you want to do. How can you clean an 'svn update'?"
+                        return 1
+                    elif [ "$b_mk_image" == "true" ]; then
+                        echo_error "I don't understand what you want to do. How can you clean an image?"
+                        return 1
+                    elif [ "$b_mk_clean" == "true" ]; then
+                        echo_error "I don't understand what you want to do. You want to clean clean?"
+                        return 1
+                    fi
+                    b_mk_clean=true
+                ;;
+            libs) b_mk_libs=true
+                ;;
+            perf) b_mk_performance=true
+                ;;
+            performance) b_mk_performance=true
+                ;;
+            per) b_mk_performance=true
+                ;;
+            update) b_mk_update=true
+                if [ -z $VERINT_BASE -o ! -e $VERINT_BASE ]; then
+                    echo_error "VERINT_BASE environment variable is not set. Did you run 'workon'?"
+                    return 1
+                fi
+                ;;
+            *)  echo -e "$USAGE"
+                return 1
+                ;;
+        esac
+        shift
+    done
+
+    # if any 6wind-dependent make is specified, make sure that the proper environment variables are set correctly
+    if [ "$b_mk_fp" == "true" -o "$b_mk_linux" == "true" -o "$b_mk_fpm" == "true" -o "$b_mk_logger" == "true" -o "$b_mk_mop" == "true" -o "$b_mk_libs" == "true" -o "$b_mk_image" == "true" -o "$b_mk_utils" -o "$b_mk_confd" == "true" -o "$b_mk_yang" == "true" -o "$b_mk_ipms" == "true" -o "$b_mk_dtb" == "true" -o "$b_mk_all" == "true" ]; then
+        if [ -z $ROOTDIR ]; then
+            echo_error "ROOTDIR environment variable is not set. Did you run 'workon'?"
+            return 1
+        elif [ ! -d $ROOTDIR ]; then
+            echo_error "The directory pointed to by ROODIR $ROOTDIR does not exist"
+            return 1
+        fi
+    fi
+
+    if [ "$b_mk_update" == "true" ]; then
+        if [ -z $VERINT_BASE ]; then
+            echo_error "VERINT_BASE environment variable is not set. Did you run 'workon'?"
+            return 1
+        elif [ ! -d $VERINT_BASE ]; then
+            echo_error "The directory pointed to by VERINT_BASE $VERINT_BASE does not exist"
+            return 1
+        fi
+        svn update $VERINT_BASE
+    fi
+
+    if [ "$b_mk_all" == "true" ]; then
+        cmdline=`svnversion $VERINT_BASE | cut -f 2 -d : | cut -f 1 -d M`
+        result=$?
+        if [ "$result" != "0" ]; then
+            return $result
+        fi
+        if [ -f $VERINT_BASE/IPMS/YANG/make.sh ]; then
+            cd $VERINT_BASE/IPMS/YANG/
+        else
+            cd $VERINT_BASE/IPMS/YangModel/
+        fi
+        sudo ./make.sh 1.0.0.${cmdline} || return 1
+        cd -
+
+        make V=1 -C ${ROOTDIR} mcore_pclean || return 1
+        make V=1 -C ${ROOTDIR} linux_aclean || return 1
+
+        if [ "$NETLOGIC_SDK_VERSION" != "2.2.4" -o -f ${MTOPDIR}/naesoft/build-nae.sh ]; then
+            ${MTOPDIR}/naesoft/build-nae.sh || return 1
+        fi
+
+        if [ "$b_mk_performance" == "true" ]; then
+            make V=1 -C $ROOTDIR CONFIG_SB_RELEASE=y
+        else
+            make V=1 -C $ROOTDIR 
+        fi
+
+        return $?
+    fi
+
+    if [ "$b_mk_nae" == "true" ]; then
+        ${MTOPDIR}/naesoft/build-nae.sh || return 1
+    fi
+
+    if [ "$b_mk_dtb" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            if [ "$NETLOGIC_SDK_VERSION" == "2.2.4" ]; then
+                echo "We do not clean the dtb target in this version. We only make it. You only need to run 'mk dtb'"
+            else
+                make V=1 -C ${ROOTDIR} mcore/fastpath/xlp/sysconfig_pclean || return 1
+            fi
+        else
+            if [ ! -f ${MTOPDIR}/naesoft/build-nae.sh ]; then
+                make V=1 -C ${ROOTDIR} extra_image
+            else
+                if [ "$NETLOGIC_SDK_VERSION" == "2.2.4" ]; then
+                    ${MTOPDIR}/naesoft/build-nae.sh && make V=1 -C ${ROOTDIR} extra_image
+                else
+                    ${MTOPDIR}/naesoft/build-nae.sh && make V=1 -C ${ROOTDIR} mcore/fastpath/xlp/sysconfig_pmake && make V=1 -C ${ROOTDIR} extra_image
+                fi
+            fi
+            if [ "$?" != "0" ]; then
+                return 1
+            fi
+        fi
+    fi
+
+    if [ "$b_mk_fp" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C ${ROOTDIR} ${FASTPATH_MAKE_PATH}_pclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                if [ "$NETLOGIC_SDK_VERSION" == "2.2.4" ]; then
+                    make V=1 -C ${ROOTDIR} mcore/fpn-sdk_pmake CONFIG_SB_RELEASE=y || return 1
+                fi
+                make V=1 -C ${ROOTDIR} ${FASTPATH_MAKE_PATH}_pmake CONFIG_SB_RELEASE=y || return 1
+            else
+                if [ "$NETLOGIC_SDK_VERSION" == "2.2.4" ]; then
+                    make V=1 -C ${ROOTDIR} mcore/fpn-sdk_pmake || return 1
+                fi
+                make V=1 -C ${ROOTDIR} ${FASTPATH_MAKE_PATH}_pmake || return 1
+            fi
+            make -C $ROOTDIR ${FASTPATH_MAKE_PATH}_promfs || return 1
+        fi
+    fi
+
+    if [ "$b_mk_utils" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR libutils_aclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                make V=1 -C $ROOTDIR libutils_amake CONFIG_SB_RELEASE=y || return 1
+            else
+                make V=1 -C $ROOTDIR libutils_amake || return 1
+            fi
+        fi
+    fi
+
+    if [ "$b_mk_prov" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR libprovisioning_aclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                make V=1 -C $ROOTDIR libprovisioning_amake CONFIG_SB_RELEASE=y || return 1
+            else
+                make V=1 -C $ROOTDIR libprovisioning_amake || return 1
+            fi
+        fi
+    fi
+
+    if [ "$b_mk_threads" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR libthreads_aclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                make V=1 -C $ROOTDIR libthreads_amake CONFIG_SB_RELEASE=y || return 1
+            else
+                make V=1 -C $ROOTDIR libthreads_amake || return 1
+            fi
+        fi
+    fi
+
+    if [ "$b_mk_confd" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR libconfd_aclean || return 1
+        else
+            make V=1 -C $ROOTDIR libconfd_amake || return 1
+        fi
+    fi
+
+    if [ "$b_mk_ipms" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR libipms-api_aclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                make V=1 -C $ROOTDIR libipms-api_amake CONFIG_SB_RELEASE=y || return 1
+            else
+                make V=1 -C $ROOTDIR libipms-api_amake || return 1
+            fi
+        fi
+    fi
+
+    if [ "$b_mk_linux" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR linux_aclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                make V=1 -C $ROOTDIR linux_amake CONFIG_SB_RELEASE=y || return 1
+            else
+                make V=1 -C $ROOTDIR linux_amake || return 1
+            fi
+            make V=1 -C $ROOTDIR linux_aromfs || return 1
+        fi
+    fi
+
+    if [ "$b_mk_libs" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR libs_aclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                make V=1 -C $ROOTDIR libs_amake CONFIG_SB_RELEASE=y || return 1
+            else
+                make V=1 -C $ROOTDIR libs_amake || return 1
+            fi
+        fi
+    fi
+
+    if [ "$b_mk_fpm" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR fpm-addon_aclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                make V=1 -C $ROOTDIR fpm-addon_amake CONFIG_SB_RELEASE=y || return 1
+            else
+                make V=1 -C $ROOTDIR fpm-addon_amake || return 1
+            fi
+            make V=1 -C $ROOTDIR fpm-addon_aromfs || return 1
+        fi
+    fi
+
+    if [ "$b_mk_logger" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR fpm-logger_aclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                make V=1 -C $ROOTDIR fpm-logger_amake CONFIG_SB_RELEASE=y || return 1
+            else
+                make V=1 -C $ROOTDIR fpm-logger_amake || return 1
+            fi
+            make V=1 -C $ROOTDIR fpm-logger_aromfs || return 1
+        fi
+    fi
+
+    if [ "$b_mk_mop" == "true" ]; then
+        if [ "$b_mk_clean" == "true" ]; then
+            make V=1 -C $ROOTDIR mop_aclean || return 1
+        else
+            if [ "$b_mk_performance" == "true" ]; then
+                make V=1 -C $ROOTDIR mop_amake CONFIG_SB_RELEASE=y || return 1
+            else
+                make V=1 -C $ROOTDIR mop_amake || return 1
+            fi
+            make V=1 -C $ROOTDIR mop_aromfs || return 1
+        fi
+    fi
+
+    # the making of the image is the last thing we do
+    if [ "$b_mk_image" == "true" ]; then
+        if [ "$b_mk_performance" == "true" ]; then
+            make V=1 -C $ROOTDIR image CONFIG_SB_RELEASE=y || return 1
+        else
+            make V=1 -C $ROOTDIR image || return 1
+        fi
+    fi
+
+    if [ "$b_mk_yang" == "true" ]; then
+        cmdline=`svnversion $VERINT_BASE | cut -f 2 -d : | cut -f 1 -d M`
+        if [ "$?" == "0" ]; then
+            if [ -f $VERINT_BASE/IPMS/YANG/make.sh ]; then
+                cd $VERINT_BASE/IPMS/YANG/
+            else
+                cd $VERINT_BASE/IPMS/YangModel/
+            fi
+            sudo ./make.sh 1.0.0.${cmdline}
+            cd -
+        fi
+    fi
+}
+

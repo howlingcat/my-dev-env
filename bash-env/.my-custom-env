@@ -1,0 +1,214 @@
+upgrade_yang() {
+    rm -f ~/ipms-proxy/confd.cdb/cdb/*.cdb
+    rm -f ~/ipms-proxy/confd.cdb/cdb/global.data
+    rm -f ~/ipms-proxy/confd.cdb/cdb/rollback*
+
+    cd ~/install/yang/1.0.0.1071
+    ./install-yang.sh
+    cd -
+}
+
+clean_nae() {
+    if [ -z $MTOPDIR ]; then
+        echo "MTOPDIR environment variable must be set"
+        exit 1
+    fi
+
+    export SDK_DIR="/opt/netos/sdk-base-2.2.2"
+    export PATH=$SDK_DIR/toolchains_bin/mipscross/elf/bin:$PATH
+    export FDT_DIR="$SDK_DIR/libraries/fdt"
+
+    export MAKEFILEDIR="$MTOPDIR/build/makefiles"
+    make -C $MTOPDIR/naesoft MAKEFLAGS="" CONFIG=xlp clean
+    make -C $MTOPDIR/naesoft MAKEFLAGS="" CONFIG=ucore clean
+}
+
+__reconnect_screen() {
+    if [ "$TERM" != "screen" ]; then
+        host=`hostname -s`
+        screen_entries=`screen -ls | grep $host`
+        if [ $? -eq 0 ]; then
+            num_screen_entries=`echo $screen_entries | wc -l` 
+            if [ "$num_screen_entries" == "1" ]; then
+                screen -r -d $screen_entries
+            fi
+        else
+            screen
+        fi
+    fi
+}
+ __modify_prompt() {     if [ "$PS1" != "" ]; then         PS1="\u@\h:\w..\n\[\e[44m\]${@}\[\e[0m\]..] ";     fi; }
+
+__modify_prompt() {
+    if [ "$PS1" != "" ]; then
+        PS1="\u@\h:\w..\n\[\e[44m\]${@}\[\e[0m\]..] "
+    fi
+}
+
+__format_by_status() {
+    RET=$?
+    if [ "$RET" == "0" ]; then
+        echo -en "\e[1;34m<$RET>\e[m"
+    else
+        echo -en "\e[1;31m<$RET>\e[m"
+    fi
+}
+
+# if we are an interactive shell
+if [ "$PS1" != "" ]; then
+    if [ "$TERM" != "screen" ]; then
+        PS1="\[\033[1;34m\]\u\[\033[m\]\[\033[31m\]@\[\033[m\]\[\033[33m\]\h:\[\033[m\]\[\033[32m\]\w..\[\033[m\]\n..] "
+    else
+        PS1="\e[1;34m\u\e[m\e[1:31m@\e[m\e[1:36m\h:\e[m\e[1:32m\w\$(__format_by_status)..\e[m\n..] "
+    fi
+#    __reconnect_screen
+fi
+
+#-------------------------------------------------------------
+# Name:         msdgrep
+# Purpose:      customize the grep command
+# Parameter(s): 1 - The string to grep for. must be passed in
+#                   with ""
+#               2 - The path where we wish to search
+#-------------------------------------------------------------
+msdgrep(){
+    if [ $# -lt 2 ]; then
+        echo_error "Usage: msdgrep \"string\" path"
+        return 1
+    fi
+
+    # search recursively, omitting binaries, suppressing error
+    grep -r -I $@ 2>/dev/null
+}
+export -f msdgrep
+
+export XLP_IMAGE_SERVER_MOUNT="/mnt/10.168.13.157"
+cp_xlp_image(){
+    cp $ROOTDIR/images/* ${XLP_IMAGE_SERVER_MOUNT}/
+}
+export -f cp_xlp_image
+
+testme(){
+    if [ "$#" == "0" ]; then
+        echo "testme called"
+    else
+        echo "testme: $@"
+    fi
+}
+
+export -f testme
+
+exportvanillavars(){
+    if [ -z $1 ] || [ -z $2 ]; then
+        echo_error "Usage: exportvanillavars <silver-bullet sandbox> <6wind code directory>"
+        return 1
+    fi
+
+    # clean the path from both xlr & xlp netlogic paths
+    # so that we can set either one
+    clean_path
+    export VERINT_BASE=$SILVER_BULLET_BASE/$1
+    export MYROOT=$SIXWIND_BASE/$2
+    export ROOTDIR=$MYROOT
+    export ADDON_PATH=$VERINT_BASE
+    export EXTRA_CONFIG=$ADDON_PATH/scripts/extra_config
+    export DIST_MCORE_ADDON=$ADDON_PATH
+    export DIST_PORTS_ADDON=$ADDON_PATH/ports
+    
+    export CSCOPE_DB="`find $VERINT_BASE/ -maxdepth 1 -name "*.cscope" 2>/dev/null | head -1` `find $ROOTDIR/ -maxdepth 1 -name "*.cscope" 2>/dev/null | head -1`"
+
+    NETL_SDK_DIR=/opt/netos/sdk-base-2.2.2
+    HAL_DIR=${NETL_SDK_DIR}/libraries/hal
+    FDT_DIR=${NETL_SDK_DIR}/libraries/fdt
+    export NETL_SDK_DIR HAL_DIR FDT_DIR
+    TOOLCHAINS_DIR=${NETL_SDK_DIR}/toolchains_bin
+    export PATH=${TOOLCHAINS_DIR}/mipscross/linux_plt/bin:${PATH}
+    export PATH=${TOOLCHAINS_DIR}/mipscross/elf/bin:${PATH}
+    export LD_LIBRARY_PATH=${TOOLCHAINS_DIR}/mipscross/linux/i686-pc-linux-gnu/mips64-nlm-linux/lib                      
+    export MTOPDIR=$VERINT_BASE/fast_path/nae
+    export CSCOPE_DB=${CSCOPE_DB}" ${NETL_SDK_DIR}/${NETL_SDK_DIR}.cscope"
+}
+export -f exportvanillavars
+
+#workon-vanilla(){
+#    SILVER_BULLET_SANDBOX=""
+#    SIXWIND_SANDBOX=""
+
+#    if [ -z $1 ]; then
+#        echo_error "Usage: workon-vanilla <silver-bullet sandbox> [6wind code dir]"
+#        return 1
+#    fi
+
+#    SILVER_BULLET_SANDBOX="$1"
+
+#    if [ ! -d $SILVER_BULLET_BASE/$1 ]; then
+#        echo_error "$SILVER_BULLET_BASE/$1 does not exist"
+#        return 1
+#    fi
+
+#    SIXWIND_SANDBOX="$2"
+#    if [ -z $SIXWIND_SANDBOX ]; then
+#        SIXWIND_SANDBOX=$SILVER_BULLET_SANDBOX
+#    fi
+
+#    if [ ! -d $SIXWIND_BASE/$SIXWIND_SANDBOX ]; then
+#        echo_error "$SIXWIND_BASE/$SIXWIND_SANDBOX does not exist"
+#        return 1
+#    fi
+
+#    BUILD_DIR=$SILVER_BULLET_BASE/$SILVER_BULLET_SANDBOX
+#    cd $BUILD_DIR
+#    exportvanillavars $SILVER_BULLET_SANDBOX $SIXWIND_SANDBOX
+#    cp $ROOTDIR/debug/.gdbinit $HOME/
+
+#    return 0
+#}
+#export -f workon-vanilla
+
+mkanycscope(){
+    DIR=`pwd`
+    vim_db_name=`basename $DIR`
+
+    \rm -f $DIR/*.filelist $DIR/*.cscope
+    find $DIR \( -path $VERINT_BASE/PRU -o -path $VERINT_BASE/6wind/ffu/patch -o -path "*\/\.svn" \) -prune -o -type f \( -name "*.c" -o -name "*.mk" -o -name "*.cpp" -o -name "*.sh" -o -name "*.h" -o -name "makefile*" -o -name "Makefile*" \) -print | sed 's/.* .*/"&"/' > $DIR/$vim_db_name.filelist
+    cscope -f $DIR/$vim_db_name.cscope -q -k -R -b -i $DIR/$vim_db_name.filelist
+    #\rm -f $DIR/*.filelist
+}
+export -f mkanycscope
+
+mklinuxcscope(){
+    DIR=`pwd`
+    vim_db_name=`basename $DIR`
+
+    \rm -f $DIR/*.filelist $DIR/*.cscope
+    LNX_2=$ROOTDIR/linux-2.6-secondary/arch
+    find $DIR \( -path $LNX_2/alpha -o -path $LNX_2/arm -o -path $LNX_2/avr32 -o -path $LNX_2/blackfin -o -path $LNX_2/cris -o -path $LNX_2/frv -o -path $LNX_2/h8300 -o -path $LNX_2/ia64 -o -path $LNX_2/m32r -o -path $LNX_2/m68k -o -path $LNX_2/m68knommu -o -path $LNX_2/microblaze -o -path $LNX_2/mn10300 -o -path $LNX_2/parisc -o -path $LNX_2/powerpc -o -path $LNX_2/s390 -o -path $LNX_2/score -o -path $LNX_2/sh -o -path $LNX_2/sparc -o -path $LNX_2/um -o -path $LNX_2/x86 -o -path $LNX_2/xtensa \) -prune -o -type f \( -name "*.c" -o -name "*.mk" -o -name "*.cpp" -o -name "*.sh" -o -name "*.h" -o -name "makefile*" -o -name "Makefile*" \) -print | sed 's/.* .*/"&"/' > $DIR/$vim_db_name.filelist
+    cscope -f $DIR/$vim_db_name.cscope -q -k -R -b -i $DIR/$vim_db_name.filelist
+    \rm -f $DIR/*.filelist
+}
+export -f mklinuxcscope
+
+
+alias show-modified-files='svn diff . | grep "Index:" | cut -f 2 -d " "'
+
+alias tm='cp_xlp_image'
+alias mips-objdump='mips64-nlm-linux-objdump'
+alias mips-addr2line='mips64-nlm-linux-addr2line'
+alias mips-nm='mips64-nlm-linux-nm'
+alias mips-addr2line='mips64-nlm-linux-addr2line'
+alias mips-gdbtui='$ROOTDIR/debug/bin/mips-unknown-linux-gnu-gdbtui'
+
+#TOOLCHAINS_DIR=${NETL_SDK_DIR}/toolchains_bin
+#export PATH=${TOOLCHAINS_DIR}/mipscross/linux_plt/bin:${PATH}
+#export PATH=${TOOLCHAINS_DIR}/mipscross/elf/bin:${PATH}
+#export LD_LIBRARY_PATH=${TOOLCHAINS_DIR}/mipscross/linux/i686-pc-linux-gnu/mips64-nlm-linux/lib
+export VIM_USES_CSCOPE=yes
+alias get-prot-summary='tshark -q -z io,phs -r'
+alias diff='diff -up'
+alias vi='vim'
+alias checkpatch='patch -p0 --dry-run'
+alias patch='patch -p0'
+alias restorevncconfig='vncconfig -iconic &'
+alias show-conflicts="svn status | grep -P '^(?=.{0,6}C)'"
+alias find-largest-dirs='sudo du -cks * | sort -rn | head'
+alias disassemble='objdump -dSlr'

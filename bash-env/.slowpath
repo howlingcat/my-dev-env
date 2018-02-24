@@ -1,0 +1,338 @@
+# aliases
+#alias diff='diff -up'
+#alias vi='vim'
+#alias restorevncconfig='vncconfig -iconic &'
+alias verint='[[ ! -z $VERINT_BASE ]] && cd $VERINT_BASE'
+alias dpdk='[[ ! -z $DPDK_BASE ]] && cd $DPDK_BASE'
+alias rte='[[ ! -z $RTE_SDK ]] && cd $RTE_SDK'
+
+# slow-path aliases
+alias setup_dpdk='$VERINT_BASE/slow_path/spdk-setup/src/setup.py --setup-only dpdk'
+alias setup_ipms='$VERINT_BASE/slow_path/spdk-setup/src/setup.py --setup-only ipms'
+alias setup_script='$VERINT_BASE/slow_path/spdk-setup/src/setup.py'
+
+export LC_ALL=en_US
+
+# environment setup
+#ulimit -c unlimited
+#export EDITOR=vim
+
+# exports
+#export SOURCE_BASE=$HOME/sources
+export DPDK_BASE=$SOURCE_BASE/dpdk
+#export SILVER_BULLET_BASE=$SOURCE_BASE/silver-bullet
+#export SB_SVN_URL="http://tlvsvn1/svn/repos-silver-bullet"
+
+#-------------------------------------------------------------
+# Name:         check_build_dirs
+# Purpose:      make sure that sources, sources/silver-bullet,
+#               and sources/dpdk directories exist
+# Parameter(s): none
+#-------------------------------------------------------------
+#check_build_dirs(){
+#    [ -d $SILVER_BULLET_BASE ] || mkdir -p $SILVER_BULLET_BASE
+#    [ -d $DPDK_BASE ] || mkdir -p $DPDK_BASE
+#}
+#export -f check_build_dirs
+
+#-------------------------------------------------------------
+# Name:         echo_error
+# Purpose:      echoes the passed-in parameters to stderr
+# Parameter(s): variable
+#-------------------------------------------------------------
+#echo_error(){
+#    echo "$@" >&2
+#}
+#export -f echo_error
+
+#-------------------------------------------------------------
+# Name:         get_path_from_sandbox
+# Purpose:      given a file system path return the URL 
+#               of the svn this path was generated from
+# Parameter(s): path to the file system directory
+# return:       1 if the path is not a working svn directory
+#               0 otherwise
+#               the function outputs the URL upon success
+#
+#-------------------------------------------------------------
+#get_svn_url_from_sp_path(){
+#    output=`svn info $1 | grep "URL:" | cut -f 2 -d " "`
+
+#    if [ "$?" != "0" ]; then
+#        echo_error "get_svn_url_from_sp_path failed"
+#        return 1
+#    fi
+
+#    echo $output
+#    return 0
+#}
+#export -f get_svn_url_from_sp_path
+
+#-------------------------------------------------------------
+# Name:         get_dpdk_version
+# Purpose:      get the version of the dpdk as an integer
+# Parameter(s): 1. mandatory. the path to the dpdk code
+#-------------------------------------------------------------
+get_dpdk_version(){
+    if [ -z $1 ]; then
+        echo_error 'Usage: get_dpdk_version $RTE_SDK'
+        return 1
+    fi
+    version=""
+    for num in `grep "RTE_VER_MAJOR\|RTE_VER_MINOR\|RTE_VER_PATCH_LEVEL" $RTE_SDK/lib/librte_eal/common/include/rte_version.h | grep define | sort | cut -f 3 -d " "`; do 
+        if [ "$version" == "" ]; then 
+             version=$num; 
+        else
+             version=$version$num
+        fi 
+    done
+
+    echo $version
+}
+export -f get_dpdk_version
+
+#-------------------------------------------------------------
+# Name:         exportvars
+# Purpose:      sets the environment variables 
+#               that the particular silver-bullet 
+#               needs (XLR/XLP). 
+#               does not check that the directories actually 
+#               exist
+# Parameter(s): 1. mandatory. silver bullet sandbox name
+#               2. mandatory. 6wind code directory name
+#-------------------------------------------------------------
+exportvars(){
+    if [ -z $1 ] || [ -z $2 ]; then
+        echo_error "Usage: exportvars <silver-bullet sandbox> <dpdk sandbox>"
+        return 1
+    fi
+
+    export VERINT_BASE=$SILVER_BULLET_BASE/$1
+    export RTE_SDK=$DPDK_BASE/$2
+    version=`get_dpdk_version $RTE_SDK`
+    #if [ $version -lt 170 ]; then
+    #    export RTE_TARGET="x86_64-default-linuxapp-gcc"
+    #else
+	#    export RTE_TARGET="x86_64-native-linuxapp-gcc"
+    #fi
+
+    export CSCOPE_DB="`find $VERINT_BASE/ -maxdepth 1 -name "*.cscope" 2>/dev/null | head -1` `find $ROOTDIR/ -maxdepth 1 -name "*.cscope" 2>/dev/null | head -1`"
+
+    svn_url=`get_svn_url_from_sp_path $VERINT_BASE`
+    if [ "$?" != "0" ]; then
+        echo_error "unable to retrieve VERINT_BASE ($VERINT_BASE) svn url"
+        return 1
+    fi
+
+}
+export -f exportvars
+
+#-------------------------------------------------------------
+# Name:         workon
+# Purpose:      cd's to the specified sandbox and sets
+#               the appropriate environment variables.
+#               if the second parameter is not provided
+#               then it is assumed that the name of the 
+#               dpdk directory is the same as that of
+#               the silver-bullet sandbox
+#               both directories (silver-bullet sandbox 
+#               and dpdk) must exist
+# Parameter(s): 1. Mandatory. Name of sandbox directory
+#               2. Optional. Name of the dpdk directory.
+#                  If ommitted, the name of the sandbox
+#                  is assumed to be the name of the dpdk
+#                  directory as well.
+#-------------------------------------------------------------
+workon(){
+    SILVER_BULLET_SANDBOX=""
+    DPDK_SANDBOX=""
+    DPDK_NAME="DPDK"
+
+    if [ -z $1 ]; then
+        echo_error "Usage: workon <silver-bullet sandbox> [dpdk sandbox]"
+        return 1
+    fi
+
+    SILVER_BULLET_SANDBOX="$1"
+
+    if [ ! -d $SILVER_BULLET_BASE/$1 ]; then
+        echo_error "$SILVER_BULLET_BASE/$1 does not exist"
+        return 1
+    fi
+
+    DPDK_SANDBOX="$2"
+    if [ -z $DPDK_SANDBOX ]; then
+        DPDK_SANDBOX=${DPDK_NAME}
+    fi
+
+    if [ ! -d $DPDK_BASE/$DPDK_SANDBOX ]; then
+        echo_error "$DPDK_BASE/$DPDK_SANDBOX does not exist"
+        return 1
+    fi
+
+    BUILD_DIR=$SILVER_BULLET_BASE/$SILVER_BULLET_SANDBOX
+    cd $BUILD_DIR
+    exportvars $SILVER_BULLET_SANDBOX $DPDK_SANDBOX
+
+#    changed_files=`svn status | grep -v "^\?\|PRU\|dpdk\/slowpath" | awk '{ print $2 }'`
+#    sorted_by_date=`ls -1t $changed_files *cscope 2>/dev/null | head -1`
+#
+    return 0
+}
+export -f workon
+
+#-------------------------------------------------------------
+# Name:         __print_mk_usage
+# Purpose:      A private function. prints out a usage
+#               statement common to both svnco and mksb
+# Parameter(s): the name of the function that invoked this one
+#-------------------------------------------------------------
+__print_mk_usage(){
+    echo -e "Usage:  $1 -n <name> [-b|-t] [-r] [-s]\n"                                                          \
+                   "        -n name            Mandatory. The name of the sandbox to create\n"                  \
+                   "        -b branch          Optional. The name of the branch to create the sandbox from\n"   \
+                   "        -t tag             Optional. The name of the tag to create the sandbox from\n"      \
+                   "        -r revision        Optional. The number of the revision that should be retrieved\n" \
+                   "        -s dpdk name       Optional. An alternate name for the dpdk directory.\n"          \
+                   "                           If not specified, the silver bullet sandbox name is used\n"      \
+                   "        '-b' and '-t' are mutually exclusive. If neither is specified\n"                    \
+                   "        then the sandbox is created from the trunk. If both are specified\n"                \
+                   "        the latter is taken.\n" >&2
+}
+export -f __print_mk_usage
+
+#-------------------------------------------------------------
+# Name:         svnco
+# Purpose:      checks out the specified silver-bullet branch.
+# Parameter(s): see usage
+#-------------------------------------------------------------
+svnco(){
+    SVN_REVISION=""
+    SVN_DIR="trunk"
+    SANDBOX_NAME=""
+
+    DPDK_SVN_DIR="development/3rd-Party/DPDK"
+    DPDK_NAME=""
+
+    SVN_BUILD_USER="--username sbbuilder --password verint1! --non-interactive"
+
+    # must set these variable before the loop. otherwise things don't work
+    OPTIND=1
+    while getopts ":n:b:t:r:s:" Option
+    do
+        case $Option in
+            b) SVN_DIR="branches/${OPTARG}";;
+            n) SANDBOX_NAME="${OPTARG}";;
+            t) SVN_DIR="tags/${OPTARG} ";;
+            r) SVN_REVISION="-r ${OPTARG} ";;
+            s) DPDK_NAME="${OPTARG} ";;
+        esac
+    done
+
+    if [ -z $SANDBOX_NAME ]; then
+        __print_mk_usage "svnco"
+        return 1
+    fi
+
+    # ensure that the build directories exist
+    check_build_dirs
+    
+    #co the Verint Base 
+    SILVER_BULLET_SANDBOX=${SILVER_BULLET_BASE}/${SANDBOX_NAME}
+
+    rm ${SILVER_BULLET_SANDBOX}/IPMS/YANG/src/ipms/schema/system.h
+    rm ${SILVER_BULLET_SANDBOX}/IPMS/YANG/src/ipms/schema/system.java
+
+
+
+    svn co $SVN_BUILD_USER $SB_SVN_URL/${SVN_DIR} ${SVN_REVISION} ${SILVER_BULLET_SANDBOX}
+    if [ "$?" != "0" ]; then
+        echo_error "Failed to checkout the silver bullet source"
+        return 1
+    fi
+
+    #co the DPDK
+#    DPDK_SANDBOX=$(DPDK_BASE)/$(SANDBOX_NAME)
+    if [ "$DPDK_NAME" == "" ]; then
+        DPDK_NAME="DPDK"
+    else
+        #for now the dpdk name will be hardcoded -- later when
+        #we will want it to be configurably we need to change
+        #this
+        DPDK_NAME="DPDK"
+        DPDK_SANDBOX=${DPDK_BASE}
+        svn co $SVN_BUILD_USER $SB_SVN_URL/${DPDK_SVN_DIR}/${DPDK_NAME} ${DPDK_SANDBOX}/${DPDK_NAME}
+        if [ "$?" != "0" ]; then
+            echo_error "Failed to checkout the silver bullet source"
+            return 1
+        fi
+    fi
+
+
+    # exports environment variable and builds the cscope database
+    exportvars $SANDBOX_NAME $DPDK_NAME
+
+    return 0
+}
+export -f svnco
+
+#-------------------------------------------------------------
+# Name:         mksb
+# Purpose:      calls both svnco and create a 
+#               full development environment
+# Parameter(s): 
+#-------------------------------------------------------------
+mksb(){
+    NO_ARGS=0
+    SVN_REVISION=""
+    SANDBOX_NAME=""
+    DPDK_NAME=""
+    SB_RELEASE=FALSE
+    # must set these variable before the loop. otherwise things don't work
+    OPTIND=1
+#    while getopts ":n:s:p" Option
+    while getopts ":n:s" Option
+
+    do
+        case $Option in
+            n) SANDBOX_NAME="${OPTARG} ";;
+            s) DPDK_NAME="${OPTARG} ";;
+#            p) SB_RELEASE=TRUE;;
+        esac
+    done
+
+    if [ -z $SANDBOX_NAME ]; then
+        __print_mk_usage "mksb"
+        return 1
+    fi
+
+    if [ "$DPDK_NAME" == "" ]; then
+        DPDK_NAME=$SANDBOX_NAME
+    fi
+
+    svnco $@
+    if [ "$?" != "0" ]; then
+        echo_error "svnco failed"
+        return 1
+    fi
+
+    #run the scons with make all (dpdk,spdk,test)
+    echo "running spdk-setup"
+    chmod +x $VERINT_BASE/slow_path/spdk-setup/src/setup.py 
+    $VERINT_BASE/slow_path/spdk-setup/src/setup.py --debug-conf release --AllInOne-lib     
+    if [ "$?" != "0" ]; then
+        echo_error "setup.py failed"
+        return 1
+    fi
+
+    echo "post_make"
+    return 0
+}
+export -f mksb
+
+set_dpdk_repos()
+{
+    export DPDK_REPOS=$1
+}
+export -f set_dpdk_repos
+

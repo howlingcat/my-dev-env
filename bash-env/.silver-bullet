@@ -1,0 +1,191 @@
+# set up silver-bullet env
+
+# aliases
+alias diff='diff -up'
+alias vi='vim'
+alias restorevncconfig='vncconfig -iconic &'
+
+alias 6wind='[[ ! -z $STACK_SANDBOX ]] && cd $$STACK_SANDBOX'
+alias verint='[[ ! -z $VERINT_BASE ]] && cd $VERINT_BASE'
+alias rte='[[ ! -z $STACK_SANDBOX ]] && cd $STACK_SANDBOX'
+
+export LC_ALL=en_US
+
+# environment setup
+ulimit -c unlimited
+export EDITOR=vim
+
+# exports
+export SOURCE_BASE=$HOME/sources
+export SILVER_BULLET_BASE=$SOURCE_BASE/silver-bullet
+export SB_SVN_URL="http://tlvsvn1/svn/repos-silver-bullet"
+
+#-------------------------------------------------------------
+# Name:         echo_error
+# Purpose:      echoes the passed-in parameters to stderr
+# Parameter(s): variable
+#-------------------------------------------------------------
+echo_error(){
+    echo "$@" >&2
+}
+export -f echo_error
+
+#-------------------------------------------------------------
+# Name:         get_path_from_sandbox
+# Purpose:      given a file system path return the URL 
+#               of the svn this path was generated from
+# Parameter(s): path to the file system directory
+# return:       1 if the path is not a working svn directory
+#               0 otherwise
+#               the function outputs the URL upon success
+#
+#-------------------------------------------------------------
+get_svn_url_from_sp_path(){
+    output=`svn info $1 | grep "URL:" | cut -f 2 -d " "`
+
+    if [ "$?" != "0" ]; then
+        echo_error "get_svn_url_from_sp_path failed"
+        return 1
+    fi
+
+    echo $output
+    return 0
+}
+export -f get_svn_url_from_sp_path
+
+#-------------------------------------------------------------
+# Name:         switch_env
+# Purpose:      switch between environments (fp & sp)
+# Parameter(s): none
+#-------------------------------------------------------------
+switch_env() {
+    if [ $# -lt 1 ]; then
+        echo_error "USAGE: switch_env [fp|sp]"
+        return 1
+    fi
+
+    if [ "$1" == "sp" ]; then
+        echo "Switching to the slowpath environment"
+        export SB_ENV="slow-path"
+        export STACK_DIR="$SOURCE_BASE/dpdk"
+    elif [ "$1" == "fp" ]; then
+        echo "Switching to the fastpath environment"
+        export SB_ENV="fast-path"
+        export STACK_DIR="$SOURCE_BASE/6wind"
+    else
+        echo_error "USAGE: switch_env [fp|sp]"
+        return 1
+    fi
+
+    source $HOME/.silver-bullet
+}
+
+#-------------------------------------------------------------
+# Name:         workon
+# Purpose:      cd's to the specified sandbox and sets
+#               the appropriate environment variables.
+#               if the second parameter is not provided
+#               then it is assumed that the name of the 
+#               stack directory (6wind/dpdk) is the same 
+#               as that of the silver-bullet sandbox
+#               both directories (silver-bullet sandbox 
+#               and stack) must exist
+# Parameter(s): 1. Mandatory. Name of sandbox directory
+#               2. Optional. Name of the 6wind directory.
+#                  If ommitted, the name of the sandbox
+#                  is assumed to be the name of the 6wind
+#                  directory as well.
+#-------------------------------------------------------------
+workon(){
+    VERINT_BASE=""
+    STACK_SANDBOX=""
+    EXTRA_FLAGS=""
+
+    if [ -z $1 ]; then
+        echo_error "Usage: workon <silver-bullet sandbox> [6wind code dir]"
+        return 1
+    fi
+
+    VERINT_BASE="$1"
+    if [ ! -d $SILVER_BULLET_BASE/$1 ]; then
+        echo_error "$SILVER_BULLET_BASE/$1 does not exist"
+        return 1
+    fi
+
+    if [ "$SB_ENV" == "fast-path" ]; then
+        STACK_SANDBOX="$2"
+        if [ -z $STACK_SANDBOX ]; then
+            STACK_SANDBOX=$VERINT_BASE
+        fi
+
+        if [ ! -d $STACK_DIR/$STACK_SANDBOX ]; then
+            echo_error "$STACK_DIR/$STACK_SANDBOX does not exist"
+            return 1
+        fi
+        export STACK_SANDBOX=$STACK_DIR/$STACK_SANDBOX
+    else
+        if [ "$2" == "" ]; then
+            export RTE_SDK=$HOME/sources/dpdk/DPDK
+        else
+            export RTE_SDK=$HOME/sources/dpdk/$2
+        fi
+        export RTE_TARGET="x86_64-default-linuxapp-gcc"
+        export STACK_SANDBOX=$STACK_DIR/$STACK_SANDBOX
+    fi
+
+    export VERINT_BASE=$SILVER_BULLET_BASE/$VERINT_BASE
+    cd $VERINT_BASE
+    export CSCOPE_DB="`find $VERINT_BASE/ -maxdepth 1 -name "*.cscope" 2>/dev/null | head -1` `find $ROOTDIR/ -maxdepth 1 -name "*.cscope" 2>/dev/null | head -1`"
+
+#    if [ "$VIM_USES_CSCOPE" == "yes" ]; then
+#        changed_files=`svn status | grep -v "^\?\|PRU\|6wind\/ffu\/patch" | awk '{ print $2 }'`
+#        sorted_by_date=`ls -1t $changed_files *cscope 2>/dev/null | head -1`
+#
+#        if [ "$?" == "0" ]; then
+#            (echo $sorted_by_date | grep cscope 2>&1) >/dev/null
+#            if [ "$?" != "0" ]; then
+#                mkcscope
+#            fi
+#        fi
+#    fi
+
+    return 0
+}
+export -f workon
+
+#load the fastpath of slowpath env
+if [ "$SB_ENV" == "fast-path" ]; then
+    export STACK_DIR="$SOURCE_BASE/6wind"
+    source $HOME/.fastpath
+fi
+
+if [ "$SB_ENV" == "slow-path" ]; then
+     export STACK_DIR="$SOURCE_BASE/dpdk"
+    source $HOME/.slowpath
+fi
+
+#-------------------------------------------------------------
+# Name:         mkcscope
+# Purpose:      create a cscope database for any source code.
+# Parameter(s): none
+#-------------------------------------------------------------
+mkcscope(){
+    DIR=`pwd`
+    vim_db_name=`basename $DIR`
+
+    \rm -f $DIR/*cscope*
+    \rm -f $DIR/*.filelist
+    \rm -f $DIR/*.filelist $DIR/*.cscope
+    find $DIR \( -path $VERINT_BASE/PRU -o -path $VERINT_BASE/6wind/ffu/patch -o -path "*\/\.svn" -o -path "*\/dist\/*" \) -prune -o -type f \( -name "*.c" -o -name "*.mk" -o -name "*.cpp" -o -name "*.sh" -o -name "*.h" -o -name "makefile*" -o -name "Makefile*" \) -print | sed 's/.* .*/"&"/' > $DIR/$vim_db_name.filelist
+    cscope -f $DIR/$vim_db_name.cscope -q -k -R -b -i $DIR/$vim_db_name.filelist
+    ctags --recurse --sort=yes --c++-kinds=+p --fields=+iaS --extra=+q .
+    \rm -f $DIR/*.filelist
+}
+export -f mkcscope
+
+source $HOME/.ipms
+
+if [ -f /usr/confd/confd-alias.sh ]; then
+    source /usr/confd/confd-alias.sh
+fi
+
